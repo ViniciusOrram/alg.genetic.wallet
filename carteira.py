@@ -1,5 +1,7 @@
 # Otimização de Carteira com Algoritmo Genético baseado em dados do YFinance
 # Estrutura refatorada com classes para organização e eficiência
+# Descrição: Este sistema realiza a otimização de uma carteira de investimentos utilizando algoritmos genéticos.
+# A coleta é feita com dados do Yahoo Finance e o frontend é baseado em Streamlit.
 
 import yfinance as yf
 import pandas as pd
@@ -17,6 +19,12 @@ st.title("Otimizador de Carteira com Algoritmo Genético")
 # ---------------- Classe para Coleta de Dados ----------------
 class ColetorDados:
     def __init__(self, tickers, benchmark, start, end):
+        """
+        Inicializa o coletor de dados com:
+        - tickers: lista de ativos
+        - benchmark: índice de referência (ex: ['^GSPC'])
+        - start/end: datas para o período da análise
+        """
         self.tickers = tickers
         self.benchmark = benchmark
         self.start = start
@@ -24,20 +32,31 @@ class ColetorDados:
 
     # Baixa dados históricos ajustados dos tickers e benchmark
     def baixar_dados(self):
+        """
+        Faz download dos preços ajustados dos ativos e do benchmark.
+        Retorna um DataFrame com os preços de fechamento ajustados.
+        """
         data = yf.download(self.tickers + self.benchmark, start=self.start, end=self.end, group_by="ticker",
                            auto_adjust=True)
         adj_close = pd.DataFrame()
         for t in self.tickers + self.benchmark:
             try:
-                adj_close[t] = data[t]['Close']
+                adj_close[t] = data[t]['Close'] # Preço de fechamento ajustado
             except:
-                continue
-        adj_close.dropna(axis=1, inplace=True)
+                continue # Caso algum ticker não retorne dados, é ignorado
+
+        adj_close.dropna(axis=1, inplace=True) # Remove colunas com dados faltantes
         return adj_close
 
 # ------------------- Classe para Otimização Genética -------------------
 class OtimizadorGenetico:
     def __init__(self, retornos, min_weight, max_weight, generations):
+        """
+        Define o otimizador genético:
+        - retornos: matriz de retornos dos ativos
+        - min/max_weight: limites de alocação por ativo
+        - generations: número de gerações da evolução
+        """
         self.retornos = retornos # DataFrame com retornos dos ativos
         self.min_weight = min_weight
         self.max_weight = max_weight
@@ -45,6 +64,10 @@ class OtimizadorGenetico:
 
     # Função de fitness baseada no índice de Sharpe
     def fitness_func(self, ga, solution, _):
+        """
+        Função de fitness usada pelo algoritmo genético.
+        Calcula o índice de Sharpe da carteira com os pesos sugeridos.
+        """
         weights = np.clip(solution, self.min_weight, self.max_weight)
         weights /= np.sum(weights)
         ret = np.dot(self.retornos.mean(), weights) # retorno esperado
@@ -52,7 +75,10 @@ class OtimizadorGenetico:
         return ret / vol if vol > 0 else 0
 
     def otimizar(self):
-        # Executa o algoritmo genético para encontrar os melhores pesos
+        """
+        Executa o algoritmo genético para encontrar os melhores pesos.
+        Retorna o vetor de pesos normalizado.
+        """
         ga = pygad.GA(
             num_generations=self.generations,
             num_parents_mating=20,
@@ -77,12 +103,22 @@ class OtimizadorGenetico:
 # ------------------- Classe para Simulação com Rebalanceamento -------------------
 class SimuladorCarteira:
     def __init__(self, retornos, capital, perfil_params):
+        """
+        Simula carteira com rebalanceamento trimestral.
+        - retornos: matriz de retornos
+        - capital: valor inicial investido
+        - perfil_params: dicionário com configuração do perfil de risco
+        """
         self.retornos = retornos
         self.capital = capital
         self.params = perfil_params
 
     # Realiza simulação de rebalanceamento da carteira a cada trimestre
     def simular_rebalanceamento_trimestral(self):
+        """
+        Para cada trimestre, reotimiza os pesos e acumula o valor da carteira.
+        Retorna o histórico de valor e os pesos aplicados.
+        """
         datas = self.retornos.resample('Q').first().index
         carteira_valor, historico_pesos = [], []
         valor = self.capital
@@ -107,10 +143,17 @@ class SimuladorCarteira:
 class AnalisadorKPI:
     @staticmethod
     def calcular(retornos):
+        """
+        Calcula KPIs financeiros da carteira:
+        - Retorno Anualizado
+        - Volatilidade
+        - Sharpe e Sortino
+        - Drawdown máximo
+        """
         r_mensal = retornos.mean()
         r_anual = (1 + r_mensal) ** 12 - 1
         vol = retornos.std() * np.sqrt(12)
-        sharpe = (r_anual - 0.015) / vol if vol != 0 else 0
+        sharpe = (r_anual - 0.015) / vol if vol != 0 else 0 # taxa livre de risco de 1.5%
         sortino = (r_anual - 0.015) / retornos[retornos < 0].std() if retornos[retornos < 0].std() != 0 else 0
         acumulado = (1 + retornos).cumprod()
         dd = 1 - acumulado / acumulado.cummax()
