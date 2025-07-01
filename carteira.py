@@ -1,5 +1,5 @@
 # Otimização de Carteira com Algoritmo Genético baseado em dados do YFinance
-# Objetivo: encontrar a combinação ideal de ativos que maximize o retorno esperado e minimize o risco
+# Estrutura refatorada com classes para organização e eficiência
 
 import yfinance as yf
 import pandas as pd
@@ -7,182 +7,268 @@ import numpy as np
 import pygad
 import matplotlib.pyplot as plt
 import streamlit as st
-from fpdf import FPDF
-import io
 from datetime import timedelta
 
+# Configuração da interface do Streamlit
 st.set_page_config(layout="wide")
-st.title("🧠 Otimizador de Carteira com Algoritmo Genético")
+st.title("Otimizador de Carteira com Algoritmo Genético")
 
-# ---------------- INTERFACE DE USUÁRIO ----------------
-st.sidebar.header("Configurações")
-tab = st.sidebar.radio("Escolha a análise", ["Configuração e Análise", "KPIs", "Gráficos", "Detalhamento e Relatório"])
-perfil_risco = st.sidebar.selectbox("Perfil de Risco", ["Risco Baixo", "Risco Médio", "Risco Alto"])
-num_ativos = st.sidebar.slider("Quantidade de ativos do S&P 500", 5, 50, 15)
-start_date = st.sidebar.date_input("Data inicial", value=pd.to_datetime("2022-01-01"))
-end_date = st.sidebar.date_input("Data final", value=pd.to_datetime("2024-06-25"))
-initial_capital = st.sidebar.number_input("Capital inicial (USD)", value=10000)
-rebalanceamento = st.sidebar.checkbox("Simular Rebalanceamento Trimestral", value=True)
 
-# ---------------- PARÂMETROS DE RISCO ----------------
-parametros_risco = {
-    "Risco Baixo": {"min_weight": 0.01, "max_weight": 0.10, "generations": 200},
-    "Risco Médio": {"min_weight": 0.01, "max_weight": 0.20, "generations": 300},
-    "Risco Alto":  {"min_weight": 0.01, "max_weight": 0.35, "generations": 400},
-}
+# ---------------- Classe para Coleta de Dados ----------------
+class ColetorDados:
+    def __init__(self, tickers, benchmark, start, end):
+        self.tickers = tickers
+        self.benchmark = benchmark
+        self.start = start
+        self.end = end
 
-# ---------------- DADOS ----------------
-sp500_table = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
-tickers = sp500_table['Symbol'].tolist()
-tickers = [t.replace('.', '-') for t in tickers]
-selected_tickers = tickers[:num_ativos]
-benchmark = ['^GSPC']
+    # Baixa dados históricos ajustados dos tickers e benchmark
+    def baixar_dados(self):
+        data = yf.download(self.tickers + self.benchmark, start=self.start, end=self.end, group_by="ticker",
+                           auto_adjust=True)
+        adj_close = pd.DataFrame()
+        for t in self.tickers + self.benchmark:
+            try:
+                adj_close[t] = data[t]['Close']
+            except:
+                continue
+        adj_close.dropna(axis=1, inplace=True)
+        return adj_close
 
-st.write("⬇️ Baixando dados...")
-data = yf.download(selected_tickers + benchmark, start=start_date, end=end_date, group_by="ticker", auto_adjust=True)
-adj_close = pd.DataFrame()
-for t in selected_tickers + benchmark:
-    try:
-        adj_close[t] = data[t]['Close']
-    except:
-        st.warning(f"[!] Falha em {t}")
+# ------------------- Classe para Otimização Genética -------------------
+class OtimizadorGenetico:
+    def __init__(self, retornos, min_weight, max_weight, generations):
+        self.retornos = retornos # DataFrame com retornos dos ativos
+        self.min_weight = min_weight
+        self.max_weight = max_weight
+        self.generations = generations
 
-adj_close.dropna(inplace=True)
-returns = adj_close[selected_tickers].pct_change().dropna()
-benchmark_data = adj_close[benchmark[0]].pct_change().dropna()
-
-# ---------------- FUNÇÕES AUXILIARES ----------------
-def portfolio_return(weights, rets):
-    return np.dot(rets.mean(), weights)
-
-def portfolio_volatility(weights, rets):
-    cov_matrix = rets.cov()
-    return np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-
-def run_optimization(returns, min_weight, max_weight, generations):
-    def fitness_func(ga, solution, _):
-        weights = np.clip(solution, min_weight, max_weight)
+    # Função de fitness baseada no índice de Sharpe
+    def fitness_func(self, ga, solution, _):
+        weights = np.clip(solution, self.min_weight, self.max_weight)
         weights /= np.sum(weights)
-        ret = portfolio_return(weights, returns)
-        vol = portfolio_volatility(weights, returns)
+        ret = np.dot(self.retornos.mean(), weights) # retorno esperado
+        vol = np.sqrt(np.dot(weights.T, np.dot(self.retornos.cov(), weights))) # volatilidade
         return ret / vol if vol > 0 else 0
 
-    ga = pygad.GA(
-        num_generations=generations,
-        num_parents_mating=10,
-        sol_per_pop=20,
-        num_genes=len(returns.columns),
-        gene_type=float,
-        init_range_low=min_weight,
-        init_range_high=max_weight,
-        fitness_func=fitness_func,
-        mutation_percent_genes=20,
-        mutation_type="random",
-        crossover_type="single_point",
-        allow_duplicate_genes=False
-    )
-    ga.run()
-    solution, _, _ = ga.best_solution()
-    weights = np.clip(solution, min_weight, max_weight)
-    weights /= np.sum(weights)
-    return weights
+    def otimizar(self):
+        # Executa o algoritmo genético para encontrar os melhores pesos
+        ga = pygad.GA(
+            num_generations=self.generations,
+            num_parents_mating=20,
+            sol_per_pop=60,
+            num_genes=self.retornos.shape[1],
+            gene_type=float,
+            init_range_low=self.min_weight,
+            init_range_high=self.max_weight,
+            fitness_func=self.fitness_func,
+            mutation_percent_genes=[5, 20],
+            mutation_type="adaptive",
+            crossover_type="two_points", # compatível com carteiras pequenas
+            parent_selection_type="rank",
+            keep_parents=5,
+            allow_duplicate_genes=False
+        )
+        ga.run()
+        sol, _, _ = ga.best_solution()
+        pesos = np.clip(sol, self.min_weight, self.max_weight)
+        return pesos / np.sum(pesos)
 
-# ---------------- REBALANCEAMENTO TRIMESTRAL ----------------
-def simular_rebalanceamento_trimestral():
-    datas = returns.resample('Q').first().index
-    carteira_valor = []
-    valor = initial_capital
-    historico_pesos = []
+# ------------------- Classe para Simulação com Rebalanceamento -------------------
+class SimuladorCarteira:
+    def __init__(self, retornos, capital, perfil_params):
+        self.retornos = retornos
+        self.capital = capital
+        self.params = perfil_params
 
-    for i in range(len(datas)):
-        if i == len(datas) - 1:
-            intervalo = returns[datas[i]:]
-        else:
-            intervalo = returns[datas[i]:datas[i + 1] - timedelta(days=1)]
+    # Realiza simulação de rebalanceamento da carteira a cada trimestre
+    def simular_rebalanceamento_trimestral(self):
+        datas = self.retornos.resample('Q').first().index
+        carteira_valor, historico_pesos = [], []
+        valor = self.capital
 
-        min_w = parametros_risco[perfil_risco]['min_weight']
-        max_w = parametros_risco[perfil_risco]['max_weight']
-        gen = parametros_risco[perfil_risco]['generations']
-        pesos = run_optimization(intervalo, min_w, max_w, gen)
-        historico_pesos.append(pesos)
-        retorno_intervalo = (intervalo * pesos).sum(axis=1)
-        valor = (1 + retorno_intervalo).cumprod() * valor
-        carteira_valor.append(valor)
+        for i in range(len(datas)):
+            if i == len(datas) - 1:
+                intervalo = self.retornos[datas[i]:]
+            else:
+                intervalo = self.retornos[datas[i]:datas[i + 1] - timedelta(days=1)]
 
-    serie_valor = pd.concat(carteira_valor)
-    return serie_valor, historico_pesos
+            otm = OtimizadorGenetico(intervalo, self.params['min_weight'], self.params['max_weight'],
+                                     self.params['generations'])
+            pesos = otm.otimizar()
+            historico_pesos.append(pesos)
+            retorno = (intervalo * pesos).sum(axis=1)
+            valor = (1 + retorno).cumprod() * valor
+            carteira_valor.append(valor)
 
-# ---------------- KPIs ----------------
-def calcular_kpis(retornos):
-    retorno_medio = retornos.mean()
-    retorno_anual = (1 + retorno_medio) ** 12 - 1
-    volatilidade_anual = retornos.std() * np.sqrt(12)
-    sharpe = (retorno_anual - 0.015) / volatilidade_anual if volatilidade_anual != 0 else 0
-    sortino = (retorno_anual - 0.015) / retornos[retornos < 0].std() if retornos[retornos < 0].std() != 0 else 0
-    acumulado = (1 + retornos).cumprod()
-    drawdown = 1 - acumulado / acumulado.cummax()
-    max_drawdown = drawdown.max()
-    return retorno_anual, volatilidade_anual, {
-        "Retorno Anual (%)": round(retorno_anual * 100, 2),
-        "Volatilidade Anual (%)": round(volatilidade_anual * 100, 2),
-        "Sharpe Ratio": round(sharpe, 2),
-        "Sortino Ratio": round(sortino, 2),
-        "Máximo Drawdown (%)": round(max_drawdown * 100, 2)
-    }
+        return pd.concat(carteira_valor), historico_pesos
 
-# ---------------- EXECUÇÃO PRINCIPAL ----------------
-with st.spinner("⚙️ Otimizando e simulando..."):
-    serie_valor, historico_pesos = simular_rebalanceamento_trimestral() if rebalanceamento else (None, None)
-    pesos_finais = historico_pesos[-1] if historico_pesos else run_optimization(returns, **parametros_risco[perfil_risco])
-    retorno_total = returns if not rebalanceamento else returns.loc[serie_valor.index]
-    retorno_port = (retorno_total * pesos_finais).sum(axis=1)
-    valor_port = serie_valor if rebalanceamento else (1 + retorno_port).cumprod() * initial_capital
-    ret, vol, kpis = calcular_kpis(retorno_port)
-    df_pesos = pd.DataFrame({ 'Ativo': selected_tickers, 'Peso (%)': (pesos_finais * 100).round(2) })
+# ------------------- Classe para Cálculo de KPIs -------------------
+class AnalisadorKPI:
+    @staticmethod
+    def calcular(retornos):
+        r_mensal = retornos.mean()
+        r_anual = (1 + r_mensal) ** 12 - 1
+        vol = retornos.std() * np.sqrt(12)
+        sharpe = (r_anual - 0.015) / vol if vol != 0 else 0
+        sortino = (r_anual - 0.015) / retornos[retornos < 0].std() if retornos[retornos < 0].std() != 0 else 0
+        acumulado = (1 + retornos).cumprod()
+        dd = 1 - acumulado / acumulado.cummax()
+        return r_anual, vol, {
+            "Retorno Anual (%)": round(r_anual * 100, 2),
+            "Volatilidade Anual (%)": round(vol * 100, 2),
+            "Sharpe Ratio": round(sharpe, 2),
+            "Sortino Ratio": round(sortino, 2),
+            "Máximo Drawdown (%)": round(dd.max() * 100, 2)
+        }
 
-# ---------------- TABS ----------------
+
+# ------------------- Interface Streamlit -------------------
+
+st.sidebar.header("Configurações")
+tab = st.sidebar.radio("Escolha a análise", ["Configuração e Análise", "KPIs", "Gráficos"])
+perfil_risco = st.sidebar.selectbox("Perfil de Risco", ["Risco Baixo", "Risco Médio", "Risco Alto"])
+start_date = st.sidebar.date_input("Data inicial", value=pd.to_datetime("2025-01-01"))
+end_date = st.sidebar.date_input("Data final", value=pd.to_datetime("2025-07-01"))
+capital = st.sidebar.number_input("Capital inicial (USD)", value=100)
+rebalancear = st.sidebar.checkbox("Simular Rebalanceamento Trimestral", value=False)
+
+# Parâmetros de otimização por perfil
+parametros = {
+    "Risco Baixo": {"min_weight": 0.01, "max_weight": 0.10, "generations": 200, "ativos": 10},
+    "Risco Médio": {"min_weight": 0.01, "max_weight": 0.20, "generations": 300, "ativos": 5},
+    "Risco Alto": {"min_weight": 0.01, "max_weight": 0.35, "generations": 400, "ativos": 2}
+}
+
+perfil = parametros[perfil_risco]
+# Coleta dos dados
+tickers = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]['Symbol'].str.replace('.', '-',                                                                                                           regex=False).tolist()
+coletor = ColetorDados(tickers, ['^GSPC'], start_date, end_date)
+st.write("Baixando dados...")
+adj_close = coletor.baixar_dados()
+returns_full = adj_close.pct_change().dropna()
+
+# Seleção dos melhores ativos com base no retorno médio
+melhores = returns_full.mean().sort_values(ascending=False).head(perfil['ativos'])
+retornos = returns_full[melhores.index]
+
+with st.spinner("Otimizando e simulando..."):
+    if rebalancear:
+        sim = SimuladorCarteira(retornos, capital, perfil)
+        valor_port, pesos_hist = sim.simular_rebalanceamento_trimestral()
+        pesos_finais = pesos_hist[-1]
+    else:
+        otimizador = OtimizadorGenetico(retornos, perfil['min_weight'], perfil['max_weight'], perfil['generations'])
+        pesos_finais = otimizador.otimizar()
+        retorno_port = (retornos * pesos_finais).sum(axis=1)
+        valor_port = capital * (1 + retorno_port).cumprod()
+
+# Cálculo dos KPIs
+retorno_port = (retornos * pesos_finais).sum(axis=1)
+r_anual, vol, kpis = AnalisadorKPI.calcular(retorno_port)
+df_pesos = pd.DataFrame({"Ativo": melhores.index, "Peso (%)": (pesos_finais * 100).round(2)})
+
+# ---------------- Exibição ----------------
+
+# Comparativo entre carteiras por perfil de risco
+st.subheader("Comparativo entre Perfis de Risco")
+comparativos = {}
+for nome, param in parametros.items():
+    ativos_perf = returns_full.mean().sort_values(ascending=False).head(param['ativos']).index
+    retornos_perf = returns_full[ativos_perf]
+    otm = OtimizadorGenetico(retornos_perf, param['min_weight'], param['max_weight'], param['generations'])
+    pesos_perf = otm.otimizar()
+    ret_perf = (retornos_perf * pesos_perf).sum(axis=1)
+    val_perf = capital * (1 + ret_perf).cumprod()
+    comparativos[nome] = val_perf
+
+# Gráfico comparativo entre perfis
+fig_comp, ax_comp = plt.subplots(figsize=(12, 6))
+for nome, serie in comparativos.items():
+    ax_comp.plot(serie, label=nome)
+ax_comp.set_title("Evolução da Carteira por Perfil de Risco")
+ax_comp.set_ylabel("Valor (USD)")
+ax_comp.legend()
+ax_comp.grid()
+st.pyplot(fig_comp)
+
+# Análise de setores da carteira final
+st.subheader("Composição Setorial da Carteira")
+tabela_sp500 = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
+mapa_setores = dict(zip(tabela_sp500['Symbol'].str.replace('.', '-', regex=False), tabela_sp500['GICS Sector']))
+df_pesos['Setor'] = df_pesos['Ativo'].map(mapa_setores)
+df_setor = df_pesos.groupby('Setor')['Peso (%)'].sum().sort_values(ascending=False).reset_index()
+st.dataframe(df_setor)
+fig_setor, ax_setor = plt.subplots(figsize=(10, 5))
+ax_setor.bar(df_setor['Setor'], df_setor['Peso (%)'], color='salmon')
+ax_setor.set_title("Distribuição por Setor")
+ax_setor.set_xticklabels(df_setor['Setor'], rotation=45, ha='right')
+st.pyplot(fig_setor)
+
+# Gráfico comparativo com rebalanceamento
+st.subheader("Rentabilidade: Rebalanceado vs Fixo")
+if rebalancear:
+    otm_fixo = OtimizadorGenetico(retornos, perfil['min_weight'], perfil['max_weight'], perfil['generations'])
+    pesos_fixos = otm_fixo.otimizar()
+    ret_fixo = (retornos * pesos_fixos).sum(axis=1)
+    val_fixo = capital * (1 + ret_fixo).cumprod()
+    fig_rb, ax_rb = plt.subplots(figsize=(12, 5))
+    ax_rb.plot(valor_port, label='Rebalanceado', linewidth=2)
+    ax_rb.plot(val_fixo, label='Fixo', linestyle='--')
+    ax_rb.set_title("Rentabilidade Acumulada")
+    ax_rb.set_ylabel("Valor (USD)")
+    ax_rb.legend()
+    ax_rb.grid()
+    st.pyplot(fig_rb)
+
+# Análise de Sensibilidade: variação de 5% nos pesos
+st.subheader("Análise de Sensibilidade")
+variacoes = [-0.05, 0.05]
+sensibilidade = []
+for i in range(len(pesos_finais)):
+    for delta in variacoes:
+        pesos_perturb = np.copy(pesos_finais)
+        pesos_perturb[i] = np.clip(pesos_perturb[i] + delta, perfil['min_weight'], perfil['max_weight'])
+        pesos_perturb /= np.sum(pesos_perturb)
+        ret_sim = (retornos * pesos_perturb).sum(axis=1)
+        _, _, kpi_sim = AnalisadorKPI.calcular(ret_sim)
+        sensibilidade.append({"Ativo": melhores.index[i], "Variação": f"{int(delta * 100)}%", **kpi_sim})
+
+st.dataframe(pd.DataFrame(sensibilidade))
+
+# Exibição de conteúdo conforme aba selecionada
 if tab == "Configuração e Análise":
-    st.subheader("🎯 Pesos Otimizados")
+    st.subheader("Pesos Otimizados")
     st.dataframe(df_pesos)
-    destaque = df_pesos.sort_values(by='Peso (%)', ascending=False).head(5)
-    st.markdown("**🔝 Ativos com maior peso:**")
-    st.write(destaque)
+    fig_bar, ax_bar = plt.subplots(figsize=(10, 5))
+    ax_bar.bar(df_pesos['Ativo'], df_pesos['Peso (%)'], color='skyblue')
+    ax_bar.set_ylabel("Proporção (%)")
+    ax_bar.set_xlabel("Ações")
+    ax_bar.set_title("Distribuição da Carteira por Ativo")
+    ax_bar.tick_params(axis='x', rotation=45)
+    st.pyplot(fig_bar)
 
 elif tab == "KPIs":
-    st.subheader("📊 KPIs da Carteira")
+    st.subheader("KPIs da Carteira")
     st.json(kpis)
 
 elif tab == "Gráficos":
-    st.subheader("📈 Evolução da Carteira vs Benchmark")
-    benchmark_val = (1 + benchmark_data.loc[valor_port.index]).cumprod() * initial_capital
+    st.subheader("Evolução da Carteira")
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.plot(valor_port, label="Carteira Otimizada", linewidth=2)
-    ax.plot(benchmark_val, label="S&P 500", linestyle='--')
     ax.set_title("Evolução da Carteira")
     ax.set_xlabel("Data")
     ax.set_ylabel("Valor (USD)")
-    ax.legend()
     ax.grid()
+    ax.legend()
     st.pyplot(fig)
 
-    st.subheader("🧮 Risco vs Retorno")
+    st.subheader("Risco vs Retorno")
     fig2, ax2 = plt.subplots()
-    ax2.scatter(vol, ret, c='green', s=100, label='Carteira')
-    bm_vol = benchmark_data.std() * np.sqrt(12)
-    bm_ret = (1 + benchmark_data.mean()) ** 12 - 1
-    ax2.scatter(bm_vol, bm_ret, c='red', s=80, label='S&P 500')
+    ax2.scatter(vol, r_anual, c='green', s=100, label='Carteira')
     ax2.set_xlabel('Volatilidade Anual (Risco)')
     ax2.set_ylabel('Retorno Anual')
     ax2.set_title('Dispersão Risco x Retorno')
     ax2.grid(True)
     ax2.legend()
     st.pyplot(fig2)
-
-elif tab == "Detalhamento e Relatório":
-    st.subheader("📄 Informações da Execução")
-    st.write(f"Perfil de Risco: {perfil_risco}")
-    st.write(f"Período: {start_date} a {end_date}")
-    st.write(f"Rebalanceamento Trimestral: {'Ativado' if rebalanceamento else 'Desativado'}")
-    st.write(f"Valor final da carteira: ${valor_port[-1]:,.2f}")
-    st.write("\nKPIs:")
-    st.json(kpis)
