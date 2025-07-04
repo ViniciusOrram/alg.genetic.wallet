@@ -8,7 +8,7 @@ Para rodar a aplicação, abra o terminal na pasta do projeto e execute o seguin
 
 1º pip install -r requirements.txt
 
-2º streamlit run carteira.py
+2º streamlit run app.py
 
 ## Tecnologias utilizadas
 
