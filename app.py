@@ -12,7 +12,7 @@ from kpi import AnalisadorKPI
 
 # Configurações iniciais do Streamlit
 st.set_page_config(layout="wide")
-st.title("🧠 Otimizador de Carteira com Algoritmo Genético")
+st.title("Otimizador de Carteira com Algoritmo Genético")
 
 # ---------------------- Interface ----------------------
 st.sidebar.header("Configurações")
