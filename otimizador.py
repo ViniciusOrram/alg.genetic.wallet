@@ -64,6 +64,7 @@ class OtimizadorGenetico:
 
         ga.run()
         print("[Fim da Otimização Genética]")
+        self.geracoes_efetivas = ga.generations_completed
 
         best_solution, best_fitness, _ = ga.best_solution()
         pesos = np.clip(best_solution, self.min_weight, self.max_weight)
