@@ -15,6 +15,10 @@ from kpi import AnalisadorKPI
 st.set_page_config(layout="wide")
 st.title("Otimizador de Carteira com Algoritmo Genético")
 
+# Inicializa estados persistentes
+if "otimizacao_finalizada" not in st.session_state:
+    st.session_state.otimizacao_finalizada = False
+
 # ---------------------- Interface ----------------------
 st.sidebar.header("Configurações")
 tab = st.sidebar.radio("Escolha a análise", ["Configuração e Análise", "KPIs", "Gráficos"])
@@ -22,17 +26,22 @@ perfil_risco = st.sidebar.selectbox("Perfil de Risco", ["Risco Baixo", "Risco M�
 capital = st.sidebar.number_input("Capital inicial (USD)", value=100)
 rebalancear = st.sidebar.checkbox("Simular Rebalanceamento Trimestral", value=False)
 
+# Detecção de alteração nos parâmetros
+param_hash = f"{perfil_risco}-{capital}-{rebalancear}"
+if st.session_state.get("ultimo_hash") != param_hash:
+    st.session_state.otimizacao_finalizada = False
+    st.session_state.ultimo_hash = param_hash
+
 # Parâmetros por perfil
 parametros = {
     "Risco Baixo": {"min_weight": 0.01, "max_weight": 0.10, "generations": 50, "ativos": 10},
-    "Risco Médio": {"min_weight": 0.01, "max_weight": 0.20, "generations": 100, "ativos": 5},
-    "Risco Alto": {"min_weight": 0.01, "max_weight": 0.35, "generations": 150, "ativos": 2}
+    "Risco Médio": {"min_weight": 0.01, "max_weight": 0.20, "generations": 150, "ativos": 5},
+    "Risco Alto": {"min_weight": 0.01, "max_weight": 0.35, "generations": 200, "ativos": 2}
 }
 
 perfil = parametros[perfil_risco]
 
 # ---------------------- Coleta e Pré-processamento ----------------------
-# Intervalo automático de 6 meses
 end_date = datetime.today()
 start_date = end_date - timedelta(days=180)
 
@@ -43,23 +52,38 @@ st.write("Baixando dados...")
 adj_close = coletor.baixar_dados()
 returns_full = adj_close.pct_change().dropna()
 
-# Seleção dos melhores ativos
 melhores = returns_full.mean().sort_values(ascending=False).head(perfil['ativos'])
 retornos = returns_full[melhores.index]
 
 # ---------------------- Otimização / Simulação ----------------------
 with st.spinner("Otimizando e simulando..."):
-    historico_fitness = None
-    if rebalancear:
-        sim = SimuladorCarteira(retornos, capital, perfil)
-        valor_port, pesos_hist = sim.simular_rebalanceamento_trimestral()
-        pesos_finais = pesos_hist[-1]
-    else:
-        otimizador = OtimizadorGenetico(retornos, perfil['min_weight'], perfil['max_weight'], perfil['generations'], early_stop_rounds=20)
-        pesos_finais = otimizador.otimizar()
-        historico_fitness = otimizador.historico_fitness  # capturado para exibição
-        retorno_port = (retornos * pesos_finais).sum(axis=1)
-        valor_port = capital * (1 + retorno_port).cumprod()
+    if not st.session_state.otimizacao_finalizada:
+        if rebalancear:
+            sim = SimuladorCarteira(retornos, capital, perfil)
+            valor_port, pesos_hist, historico_fitness_list = sim.simular_rebalanceamento_trimestral()
+            pesos_finais = pesos_hist[-1]
+            st.session_state.historico_fitness = historico_fitness_list[-1]
+        else:
+            otimizador = OtimizadorGenetico(retornos, perfil['min_weight'], perfil['max_weight'], perfil['generations'])
+            pesos_finais = otimizador.otimizar()
+            retorno_port = (retornos * pesos_finais).sum(axis=1)
+            valor_port = capital * (1 + retorno_port).cumprod()
+
+            st.session_state.historico_fitness = otimizador.historico_fitness
+            st.session_state.geracoes_efetivas = otimizador.geracoes_efetivas
+
+        st.session_state.valor_port = valor_port
+        st.session_state.pesos_finais = pesos_finais
+        st.session_state.retornos = retornos
+        st.session_state.melhores = melhores
+        st.session_state.otimizacao_finalizada = True
+
+# Recupera variáveis do estado
+pesos_finais = st.session_state.pesos_finais
+retornos = st.session_state.retornos
+valor_port = st.session_state.valor_port
+historico_fitness = st.session_state.historico_fitness
+melhores = st.session_state.melhores
 
 # ---------------------- KPIs ----------------------
 retorno_port = (retornos * pesos_finais).sum(axis=1)
@@ -83,13 +107,12 @@ elif tab == "KPIs":
     st.json(kpis)
 
 elif tab == "Gráficos":
-    # Comparativo entre perfis
     st.subheader("Comparativo entre Perfis de Risco")
     comparativos = {}
     for nome, param in parametros.items():
         ativos_perf = returns_full.mean().sort_values(ascending=False).head(param['ativos']).index
         retornos_perf = returns_full[ativos_perf]
-        otm = OtimizadorGenetico(retornos_perf, param['min_weight'], param['max_weight'], param['generations'], early_stop_rounds=20)
+        otm = OtimizadorGenetico(retornos_perf, param['min_weight'], param['max_weight'], param['generations'])
         pesos_perf = otm.otimizar()
         ret_perf = (retornos_perf * pesos_perf).sum(axis=1)
         val_perf = capital * (1 + ret_perf).cumprod()
@@ -104,7 +127,6 @@ elif tab == "Gráficos":
     ax_comp.grid()
     st.pyplot(fig_comp)
 
-    # Gráfico comparativo com benchmark S&P 500
     st.subheader("Carteira vs S&P 500")
     sp500 = adj_close['^GSPC']
     sp500_ret = sp500.pct_change().dropna()
@@ -119,7 +141,6 @@ elif tab == "Gráficos":
     ax_cmp.grid()
     st.pyplot(fig_cmp)
 
-    # Dispersão Risco x Retorno
     st.subheader("Risco vs Retorno")
     fig2, ax2 = plt.subplots()
     ax2.scatter(vol, r_anual, c='green', s=100, label='Carteira')
@@ -130,10 +151,7 @@ elif tab == "Gráficos":
     ax2.legend()
     st.pyplot(fig2)
 
-    # Gráficos de Evolução do Fitness do Algoritmo Genético
     st.subheader("Evolução do Algoritmo Genético")
-
-    # Fitness da melhor solução por geração
     fig_fit, ax_fit = plt.subplots()
     ax_fit.plot(historico_fitness["melhor"], color="blue", label="Melhor Fitness")
     ax_fit.plot(historico_fitness["media"], color="orange", linestyle="--", label="Fitness Médio")
