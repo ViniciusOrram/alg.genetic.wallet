@@ -162,7 +162,6 @@ $RECYCLE.BIN/
 *.csv
 *.xlsx
 *.json
-data/
 logs/
 temp/
 cache/
